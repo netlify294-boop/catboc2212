@@ -2,6 +2,8 @@ import os
 import logging
 import aiohttp
 import asyncio
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -12,7 +14,8 @@ from telegram.ext import (
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-CATBOX_USERHASH = os.getenv("CATBOX_USERHASH", "")  # optional
+CATBOX_USERHASH = os.getenv("CATBOX_USERHASH", "")
+PORT = int(os.getenv("PORT", 8080))
 # ──────────────────────────────────────────────────────────────────────────────
 
 logging.basicConfig(
@@ -22,8 +25,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# ─── Dummy HTTP server (sirf Render ke liye) ──────────────────────────────────
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running!")
+
+    def log_message(self, format, *args):
+        pass  # HTTP logs band karo
+
+
+def start_health_server():
+    server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
+    logger.info(f"Health server started on port {PORT}")
+    server.serve_forever()
+
+
+# ─── Catbox Upload ─────────────────────────────────────────────────────────────
 async def upload_to_catbox(file_bytes: bytes, filename: str):
-    """Upload raw bytes to catbox.moe and return the direct URL."""
     url = "https://catbox.moe/user/api.php"
     form = aiohttp.FormData()
     form.add_field("reqtype", "fileupload")
@@ -50,8 +70,8 @@ async def upload_to_catbox(file_bytes: bytes, filename: str):
         return None
 
 
+# ─── Telegram Handler ──────────────────────────────────────────────────────────
 async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Triggered for every new post (or forward) in channels where bot is admin."""
     message = update.channel_post or update.message
     if not message or not message.photo:
         return
@@ -99,7 +119,12 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
             logger.exception(f"Fallback send also failed: {e2}")
 
 
+# ─── Main ──────────────────────────────────────────────────────────────────────
 async def run():
+    # Health server ko alag thread mein chalao
+    thread = threading.Thread(target=start_health_server, daemon=True)
+    thread.start()
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(
@@ -114,7 +139,6 @@ async def run():
     await app.start()
     await app.updater.start_polling(allowed_updates=["channel_post", "message"])
 
-    # Keep running until interrupted
     await asyncio.Event().wait()
 
 
