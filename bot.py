@@ -2,7 +2,7 @@ import os
 import logging
 import aiohttp
 import asyncio
-from telegram import Update, InputMediaPhoto
+from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
@@ -12,7 +12,7 @@ from telegram.ext import (
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-CATBOX_USERHASH = os.getenv("CATBOX_USERHASH", "")  # optional – leave blank for anonymous uploads
+CATBOX_USERHASH = os.getenv("CATBOX_USERHASH", "")  # optional
 # ──────────────────────────────────────────────────────────────────────────────
 
 logging.basicConfig(
@@ -22,7 +22,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def upload_to_catbox(file_bytes: bytes, filename: str) -> str | None:
+async def upload_to_catbox(file_bytes: bytes, filename: str):
     """Upload raw bytes to catbox.moe and return the direct URL."""
     url = "https://catbox.moe/user/api.php"
     form = aiohttp.FormData()
@@ -35,7 +35,6 @@ async def upload_to_catbox(file_bytes: bytes, filename: str) -> str | None:
         filename=filename,
         content_type="image/jpeg",
     )
-
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, data=form, timeout=aiohttp.ClientTimeout(total=60)) as resp:
@@ -54,11 +53,7 @@ async def upload_to_catbox(file_bytes: bytes, filename: str) -> str | None:
 async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Triggered for every new post (or forward) in channels where bot is admin."""
     message = update.channel_post or update.message
-    if not message:
-        return
-
-    # We only care about messages that contain a photo
-    if not message.photo:
+    if not message or not message.photo:
         return
 
     chat_id = message.chat_id
@@ -67,7 +62,6 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     logger.info(f"New photo post in chat {chat_id}, msg {message_id}")
 
-    # Grab the highest-resolution photo variant
     photo = message.photo[-1]
 
     try:
@@ -84,7 +78,6 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         logger.warning("Skipping edit – catbox upload failed.")
         return
 
-    # Build new caption: append the catbox link
     new_caption = f"{caption}\n\n🔗 Image Link: {catbox_url}".strip()
 
     try:
@@ -93,11 +86,9 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
             message_id=message_id,
             caption=new_caption,
         )
-        logger.info(f"Post edited successfully with catbox URL.")
+        logger.info("Post edited successfully with catbox URL.")
     except Exception as e:
-        # If message has no caption slot (photo-only, no caption allowed in some edge cases)
-        # fall back to sending a reply in the channel
-        logger.warning(f"edit_message_caption failed ({e}), trying edit_message_text…")
+        logger.warning(f"edit_message_caption failed ({e}), sending reply…")
         try:
             await context.bot.send_message(
                 chat_id=chat_id,
@@ -108,10 +99,9 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
             logger.exception(f"Fallback send also failed: {e2}")
 
 
-def main():
+async def run():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Listen for channel posts that contain photos
     app.add_handler(
         MessageHandler(
             filters.PHOTO & (filters.ChatType.CHANNEL | filters.ChatType.GROUPS),
@@ -120,8 +110,13 @@ def main():
     )
 
     logger.info("Bot started. Listening for channel photo posts…")
-    app.run_polling(allowed_updates=["channel_post", "message"])
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(allowed_updates=["channel_post", "message"])
+
+    # Keep running until interrupted
+    await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(run())
