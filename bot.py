@@ -24,6 +24,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ─── Media Group tracking (pehli image process ho, baaki ignore) ───────────────
+processed_media_groups: set = set()
+media_group_lock = asyncio.Lock()
+
 
 # ─── Dummy HTTP server (sirf Render ke liye) ──────────────────────────────────
 class HealthHandler(BaseHTTPRequestHandler):
@@ -33,7 +37,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Bot is running!")
 
     def log_message(self, format, *args):
-        pass  # HTTP logs band karo
+        pass
 
 
 def start_health_server():
@@ -79,9 +83,27 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
     chat_id = message.chat_id
     message_id = message.message_id
     caption = message.caption or ""
+    media_group_id = message.media_group_id  # None agar single image hai
 
-    logger.info(f"New photo post in chat {chat_id}, msg {message_id}")
+    # ── Media group check ──
+    # Agar post mein multiple images hain (album), sirf pehli process karo
+    if media_group_id:
+        async with media_group_lock:
+            if media_group_id in processed_media_groups:
+                logger.info(f"Media group {media_group_id} already processed — skipping msg {message_id}")
+                return
+            # Pehli baar aa rahi hai — mark karo
+            processed_media_groups.add(media_group_id)
 
+        # Memory leak rokne ke liye 10 min baad group ID hata do
+        async def cleanup():
+            await asyncio.sleep(600)
+            processed_media_groups.discard(media_group_id)
+        asyncio.create_task(cleanup())
+
+    logger.info(f"Processing photo in chat {chat_id}, msg {message_id} (group: {media_group_id})")
+
+    # Highest resolution photo lo
     photo = message.photo[-1]
 
     try:
@@ -121,7 +143,6 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # ─── Main ──────────────────────────────────────────────────────────────────────
 async def run():
-    # Health server ko alag thread mein chalao
     thread = threading.Thread(target=start_health_server, daemon=True)
     thread.start()
 
